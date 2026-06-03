@@ -1,0 +1,13 @@
+/target
+target/
+Cargo.lock
+*.bam
+*.sam
+*.fasta
+*.fa
+*.fq
+*.fastq
+*.gz
+tmp/
+output/
+*.log
