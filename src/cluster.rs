@@ -100,12 +100,16 @@ pub fn parse_uc_file(path: &Path) -> Result<Vec<Vec<String>>> {
 
     for line in content.lines() {
         if line.is_empty() || line.starts_with('#') { continue; }
-        let cols: Vec<&str> = line.split('\t').collect();
+        let cols: Vec<&str> = line.trim().split('\t').collect();
         if cols.len() < 10 { continue; }
-        if cols[0] == "C" { continue; }  // cluster summary line — skip
+        let record_type = cols[0].trim();
+
+	if record_type == "C" {
+		continue;
+}
 
         let cluster_idx: usize = cols[1].parse().unwrap_or(0);
-        let seq_id = cols[8].to_string();
+        let seq_id = cols[8].trim().to_string();
 
         while clusters.len() <= cluster_idx {
             clusters.push(Vec::new());

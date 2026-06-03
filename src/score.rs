@@ -183,7 +183,7 @@ fn parse_salmon_quant(quant_sf: &Path) -> Result<HashMap<String, f64>> {
     let mut map = HashMap::new();
     for rec in &records {
         let score = (rec.tpm + 1.0).log10() / log_max;
-        map.insert(rec.name.clone(), score.clamp(0.0, 1.0));
+        map.insert(rec.name.trim().to_string(), score.clamp(0.0, 1.0));
     }
     Ok(map)
 }
@@ -206,10 +206,11 @@ mod tests {
 
     #[test]
     fn test_parse_salmon_quant() {
-        let tsv = "Name	Length	EffectiveLength	TPM	NumReads
-                   t1	500	450.0	1000.0	200.0
-                   t2	300	250.0	100.0	20.0
-                   t3	200	150.0	0.0	0.0
+        let tsv = "\
+Name\tLength\tEffectiveLength\tTPM\tNumReads
+t1\t500\t450.0\t1000.0\t200.0
+t2\t300\t250.0\t100.0\t20.0
+t3\t200\t150.0\t0.0\t0.0
 ";
         let tmp = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(tmp.path(), tsv).unwrap();

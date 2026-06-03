@@ -70,11 +70,17 @@ fn parse_coverage_output(text: &str) -> Result<HashMap<String, ContigStats>> {
     let mut stats = HashMap::new();
 
     for line in text.lines() {
-        if line.starts_with('#') || line.trim().is_empty() { continue; }
-        let cols: Vec<&str> = line.split('\t').collect();
+        if line.trim().is_empty()
+    || line.starts_with('#')
+    || line.starts_with("name")
+    || line.starts_with("rname")
+{
+    continue;
+}
+        let cols: Vec<&str> = line.trim().split('\t').collect();
         if cols.len() < 9 { continue; }
 
-        let name       = cols[0].to_string();
+        let name       = cols[0].trim().to_string();
         let start: u64 = cols[1].parse().unwrap_or(0);
         let end: u64   = cols[2].parse().unwrap_or(0);
         let length     = end.saturating_sub(start).max(1);
@@ -102,8 +108,9 @@ mod tests {
 
     #[test]
     fn test_parse_coverage_line() {
-        let tsv = "name	startpos	endpos	numreads	covbases	coverage	meandepth	meanbaseq	meanmapq
-                   contig1	1	1000	150	980	98.0	8.5	35.0	42.0
+        let tsv = "\
+name\tstartpos\tendpos\tnumreads\tcovbases\tcoverage\tmeandepth\tmeanbaseq\tmeanmapq
+contig1\t1\t1000\t150\t980\t98.0\t8.5\t35.0\t42.0
 ";
         let stats = parse_coverage_output(tsv).unwrap();
         assert_eq!(stats.len(), 1);
