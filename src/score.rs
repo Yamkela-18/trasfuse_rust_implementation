@@ -10,7 +10,7 @@
 //   Final score = 0.4 * expression_score + 0.6 * coverage_score
 
 use anyhow::{bail, Context, Result};
-use csv::ReaderBuilder;
+use csv::{ReaderBuilder, WriterBuilder};
 use log::{debug, info, warn};
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -125,6 +125,42 @@ pub fn load_scores_from_csv(csv_files: &[PathBuf]) -> Result<ScoreMap> {
     Ok(map)
 }
 
+// ── CSV writer ────────────────────────────────────────────────────────────────
+
+/// Serialise a ScoreMap to a sorted CSV file alongside output_path.
+/// Filename: <output_stem>_scores.csv  (e.g. merged.fa -> merged_scores.csv)
+/// Columns: contig_name, score  (sorted by score descending)
+/// Compatible with load_scores_from_csv() for re-use in subsequent runs.
+pub fn write_scores_csv(scores: &ScoreMap, output_path: &Path) -> Result<PathBuf> {
+    let parent = output_path.parent().unwrap_or(Path::new("."));
+    let stem = output_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "scores".into());
+    let csv_path = parent.join(format!("{stem}_scores.csv"));
+
+    // Sort by score descending so the file is easy to inspect
+    let mut rows: Vec<(&String, &f64)> = scores.iter().collect();
+    rows.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut wtr = WriterBuilder::new()
+        .has_headers(false)
+        .from_path(&csv_path)
+        .with_context(|| format!("Cannot create scores CSV {:?}", csv_path))?;
+
+    wtr.write_record(["contig_name", "score"])
+        .context("Failed to write CSV header")?;
+
+    for (name, score) in &rows {
+        wtr.write_record([name.as_str(), &format!("{:.6}", score)])
+            .context("Failed to write CSV row")?;
+    }
+    wtr.flush()?;
+
+    info!("  Scores CSV written to {:?} ({} contigs)", csv_path, rows.len());
+    Ok(csv_path)
+}
+
 // ── Phase A — Salmon ──────────────────────────────────────────────────────────
 
 fn run_salmon(
@@ -219,6 +255,42 @@ t3\t200\t150.0\t0.0\t0.0
         assert!((scores["t1"] - 1.0).abs() < 1e-6);
         assert!(scores["t3"] < 0.01);
         assert!(scores["t2"] > 0.0 && scores["t2"] < 1.0);
+    }
+
+    #[test]
+    fn test_write_scores_csv_creates_file() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let output = dir.path().join("merged.fa");
+        let scores: ScoreMap = [
+            ("k31__seq1".to_string(), 0.921),
+            ("k41__seq1".to_string(), 0.654),
+            ("k31__seq2".to_string(), 0.123),
+        ].into_iter().collect();
+        let csv_path = write_scores_csv(&scores, &output).unwrap();
+        assert_eq!(csv_path.file_name().unwrap(), "merged_scores.csv");
+        assert!(csv_path.exists());
+        // Must round-trip through load_scores_from_csv
+        let reloaded = load_scores_from_csv(&[csv_path]).unwrap();
+        assert_eq!(reloaded.len(), 3);
+        assert!((reloaded["k31__seq1"] - 0.921).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_write_scores_csv_sorted_descending() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let output = dir.path().join("out.fa");
+        let scores: ScoreMap = [
+            ("a".to_string(), 0.3),
+            ("b".to_string(), 0.9),
+            ("c".to_string(), 0.6),
+        ].into_iter().collect();
+        let csv_path = write_scores_csv(&scores, &output).unwrap();
+        let content = std::fs::read_to_string(&csv_path).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert!(lines[1].contains("b"), "first data row should be highest score 'b'");
+        assert!(lines[3].contains("a"), "last row should be lowest score 'a'");
     }
 
     #[test]

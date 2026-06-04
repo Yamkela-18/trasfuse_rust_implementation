@@ -75,6 +75,11 @@ pub struct Cli {
     #[arg(long, value_name = "CSV_FILES")]
     pub scores: Option<String>,
 
+    /// Score all assemblies, write <output_stem>_scores.csv, then exit.
+    /// Use the output CSV with --scores on a subsequent run to skip re-scoring.
+    #[arg(long)]
+    pub score_only: bool,
+
     /// Check and install missing binary dependencies, then exit
     #[arg(long)]
     pub install: bool,
@@ -159,6 +164,13 @@ Run with --install to download them.",
         score::score_assemblies(&assembly_files, &left, &right, cli.threads, cli.verbose)?
     };
     info!("Scored {} contigs across all assemblies.", scores.len());
+if cli.score_only {
+        let csv_path = score::write_scores_csv(&scores, &output)?;
+        println!("\n{} Scores written to {:?}", "✓".green().bold(), csv_path);
+        println!("  {} contigs scored", scores.len().to_string().yellow());
+        println!("\n  Re-run with: --scores {:?} --min-score <threshold> -o {:?}", csv_path, output);
+        return Ok(());
+    }
 
     // 4. Filter low-scoring contigs
     info!("{}", "Filtering contigs by score...".cyan());
