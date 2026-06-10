@@ -16,7 +16,7 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use crate::fasta::{write_fasta_record, FastaRecord};
-use crate::score::ScoreMap;
+use crate::score::{ContigScore, ScoreMap};
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -50,7 +50,7 @@ pub fn build_consensus(
                     multi_member += 1;
                     debug!("  Cluster of {} -> selected {} (score={:.3})",
                         cluster.len(), rec.id(),
-                        scores.get(rec.id()).copied().unwrap_or(0.0));
+                        scores.get(rec.id()).map(|s| s.score).unwrap_or(0.0));
                 }
             }
             None => warn!("  Empty cluster encountered, skipping."),
@@ -73,10 +73,19 @@ fn pick_best<'a>(
     if cluster.is_empty() { return None; }
 
     let best = cluster.iter().max_by(|a, b| {
-        let sa = scores.get(a.id()).copied().unwrap_or(0.0);
-        let sb = scores.get(b.id()).copied().unwrap_or(0.0);
-        sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
-    });
+    let sa = scores
+        .get(a.id())
+        .map(|s| s.score)
+        .unwrap_or(0.0);
+
+    let sb = scores
+        .get(b.id())
+        .map(|s| s.score)
+        .unwrap_or(0.0);
+
+    sa.partial_cmp(&sb)
+        .unwrap_or(std::cmp::Ordering::Equal)
+});
 
     // Prefer original (ungapped) sequence from loaded FASTA HashMap
     best.map(|rec| sequences.get(rec.id()).unwrap_or(rec))
@@ -161,8 +170,21 @@ mod tests {
     }
 
     fn make_scores(pairs: &[(&str, f64)]) -> ScoreMap {
-        pairs.iter().map(|(id, s)| (id.to_string(), *s)).collect()
-    }
+    pairs
+        .iter()
+        .map(|(id, s)| {
+            (
+                id.to_string(),
+                ContigScore {
+                    score: *s,
+                    p_good: *s,
+                    p_bases_covered: *s,
+                    coverage: 2.0,
+                },
+            )
+        })
+        .collect()
+}
 
     #[test]
     fn test_parse_single_cluster() {

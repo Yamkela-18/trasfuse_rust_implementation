@@ -1,0 +1,2 @@
+/usr/local/bin/util/support_scripts/salmon_runner.pl Trinity.tmp.fasta /data/trinity_out/both.fa 8
+/usr/local/bin/util/support_scripts/filter_transcripts_require_min_cov.pl Trinity.tmp.fasta /data/trinity_out/both.fa salmon_outdir/quant.sf 2 > /data/trinity_out.Trinity.fasta

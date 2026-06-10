@@ -24,7 +24,15 @@ use std::sync::{Arc, Mutex};
 use crate::aligner;
 use crate::bam;
 
-pub type ScoreMap = HashMap<String, f64>;
+#[derive(Debug, Clone)]
+pub struct ContigScore {
+    pub score: f64,
+    pub p_good: f64,
+    pub p_bases_covered: f64,
+    pub coverage: f64,
+}
+
+pub type ScoreMap = HashMap<String, ContigScore>;
 
 #[derive(Debug, Deserialize)]
 pub struct SalmonRecord {
@@ -37,9 +45,20 @@ pub struct SalmonRecord {
 
 #[derive(Debug, Deserialize)]
 struct TransrateRow {
-    #[serde(rename = "contig_name")] name: String,
-    #[serde(rename = "score", default)]     score: Option<f64>,
-    #[serde(rename = "p_seq_true", default)] p_seq_true: Option<f64>,
+    #[serde(rename = "contig_name")]
+    name: String,
+
+    #[serde(rename = "score", default)]
+    score: Option<f64>,
+
+    #[serde(rename = "p_good", default)]
+    p_good: Option<f64>,
+
+    #[serde(rename = "p_bases_covered", default)]
+    p_bases_covered: Option<f64>,
+
+    #[serde(rename = "coverage", default)]
+    coverage: Option<f64>,
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -82,13 +101,42 @@ pub fn score_assemblies(
             // Combine: 40% expression, 60% coverage
             let mut batch: ScoreMap = HashMap::new();
             for (raw_id, &cov_score) in &cov_scores {
-                let expr_score = salmon_scores.get(raw_id).copied().unwrap_or(0.0);
-                batch.insert(format!("{}__{}", prefix, raw_id), 0.4 * expr_score + 0.6 * cov_score);
-            }
+    let expr_score = salmon_scores
+        .get(raw_id)
+        .copied()
+        .unwrap_or(0.0);
+
+    let final_score =
+        0.4 * expr_score + 0.6 * cov_score;
+
+    batch.insert(
+        format!("{}__{}", prefix, raw_id),
+        ContigScore {
+            score: final_score,
+
+            // proxy for Transrate p_good
+            p_good: expr_score,
+
+            // proxy for p_bases_covered
+            p_bases_covered: cov_score,
+
+            // raw coverage estimate
+            coverage: cov_score * 100.0,
+        },
+    );
+}
             for (raw_id, &expr_score) in &salmon_scores {
                 let prefixed = format!("{}__{}", prefix, raw_id);
                 if !batch.contains_key(&prefixed) {
-                    batch.insert(prefixed, 0.4 * expr_score);
+                    batch.insert(
+    prefixed,
+    ContigScore {
+        score: 0.4 * expr_score,
+        p_good: expr_score,
+        p_bases_covered: 0.0,
+        coverage: 0.0,
+    },
+);
                 }
             }
 
@@ -105,23 +153,40 @@ pub fn score_assemblies(
 
 pub fn load_scores_from_csv(csv_files: &[PathBuf]) -> Result<ScoreMap> {
     let mut map = ScoreMap::new();
+
     for path in csv_files {
         info!("  Loading scores from {:?}", path);
+
         let file = File::open(path)
             .with_context(|| format!("Cannot open CSV {:?}", path))?;
-        let mut rdr = ReaderBuilder::new().has_headers(true)
+
+        let mut rdr = ReaderBuilder::new()
+            .delimiter(b'\t')
+            .has_headers(true)
             .from_reader(BufReader::new(file));
+
         for result in rdr.deserialize::<TransrateRow>() {
             match result {
                 Ok(row) => {
-                    let score = row.score.or(row.p_seq_true).unwrap_or(0.0);
-                    map.insert(row.name, score);
+                    map.insert(
+                        row.name,
+                        ContigScore {
+                            score: row.score.unwrap_or(0.0),
+                            p_good: row.p_good.unwrap_or(0.0),
+                            p_bases_covered: row
+                                .p_bases_covered
+                                .unwrap_or(0.0),
+                            coverage: row.coverage.unwrap_or(0.0),
+                        },
+                    );
                 }
-                Err(e) => warn!("  Skipping malformed CSV row: {}", e),
+                Err(e) => warn!("Skipping malformed score row: {}", e),
             }
         }
     }
-    info!("  Loaded {} scores from CSV", map.len());
+
+    info!("Loaded {} scores from file", map.len());
+
     Ok(map)
 }
 
@@ -131,33 +196,69 @@ pub fn load_scores_from_csv(csv_files: &[PathBuf]) -> Result<ScoreMap> {
 /// Filename: <output_stem>_scores.csv  (e.g. merged.fa -> merged_scores.csv)
 /// Columns: contig_name, score  (sorted by score descending)
 /// Compatible with load_scores_from_csv() for re-use in subsequent runs.
-pub fn write_scores_csv(scores: &ScoreMap, output_path: &Path) -> Result<PathBuf> {
-    let parent = output_path.parent().unwrap_or(Path::new("."));
+pub fn write_scores_csv(
+    scores: &ScoreMap,
+    output_path: &Path,
+) -> Result<PathBuf> {
+    let parent =
+        output_path.parent().unwrap_or(Path::new("."));
+
     let stem = output_path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "scores".into());
-    let csv_path = parent.join(format!("{stem}_scores.csv"));
 
-    // Sort by score descending so the file is easy to inspect
-    let mut rows: Vec<(&String, &f64)> = scores.iter().collect();
-    rows.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let csv_path =
+        parent.join(format!("{stem}_scores.csv"));
+
+    let mut rows: Vec<(&String, &ContigScore)> =
+        scores.iter().collect();
+
+    rows.sort_by(|a, b| {
+        b.1.score
+            .partial_cmp(&a.1.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let mut wtr = WriterBuilder::new()
+        .delimiter(b'\t')
         .has_headers(false)
         .from_path(&csv_path)
-        .with_context(|| format!("Cannot create scores CSV {:?}", csv_path))?;
+        .with_context(|| {
+            format!(
+                "Cannot create scores file {:?}",
+                csv_path
+            )
+        })?;
 
-    wtr.write_record(["contig_name", "score"])
-        .context("Failed to write CSV header")?;
+    wtr.write_record([
+        "contig_name",
+        "score",
+        "p_good",
+        "p_bases_covered",
+        "coverage",
+    ])?;
 
-    for (name, score) in &rows {
-        wtr.write_record([name.as_str(), &format!("{:.6}", score)])
-            .context("Failed to write CSV row")?;
+    for (name, metrics) in &rows {
+        wtr.write_record([
+            name.as_str(),
+            &format!("{:.6}", metrics.score),
+            &format!("{:.6}", metrics.p_good),
+            &format!("{:.6}",
+                metrics.p_bases_covered),
+            &format!("{:.6}",
+                metrics.coverage),
+        ])?;
     }
+
     wtr.flush()?;
 
-    info!("  Scores CSV written to {:?} ({} contigs)", csv_path, rows.len());
+    info!(
+        "Scores written to {:?} ({} contigs)",
+        csv_path,
+        rows.len()
+    );
+
     Ok(csv_path)
 }
 
@@ -263,17 +364,43 @@ t3\t200\t150.0\t0.0\t0.0
         let dir = tempdir().unwrap();
         let output = dir.path().join("merged.fa");
         let scores: ScoreMap = [
-            ("k31__seq1".to_string(), 0.921),
-            ("k41__seq1".to_string(), 0.654),
-            ("k31__seq2".to_string(), 0.123),
-        ].into_iter().collect();
+    (
+        "k31__seq1".to_string(),
+        ContigScore {
+            score: 0.921,
+            p_good: 0.921,
+            p_bases_covered: 0.921,
+            coverage: 2.0,
+        },
+    ),
+    (
+        "k41__seq1".to_string(),
+        ContigScore {
+            score: 0.654,
+            p_good: 0.654,
+            p_bases_covered: 0.654,
+            coverage: 2.0,
+        },
+    ),
+    (
+        "k31__seq2".to_string(),
+        ContigScore {
+            score: 0.123,
+            p_good: 0.123,
+            p_bases_covered: 0.123,
+            coverage: 2.0,
+        },
+    ),
+]
+.into_iter()
+.collect();
         let csv_path = write_scores_csv(&scores, &output).unwrap();
         assert_eq!(csv_path.file_name().unwrap(), "merged_scores.csv");
         assert!(csv_path.exists());
         // Must round-trip through load_scores_from_csv
         let reloaded = load_scores_from_csv(&[csv_path]).unwrap();
         assert_eq!(reloaded.len(), 3);
-        assert!((reloaded["k31__seq1"] - 0.921).abs() < 1e-5);
+        assert!((reloaded["k31__seq1"].score - 0.921).abs() < 1e-5);
     }
 
     #[test]
@@ -282,10 +409,36 @@ t3\t200\t150.0\t0.0\t0.0
         let dir = tempdir().unwrap();
         let output = dir.path().join("out.fa");
         let scores: ScoreMap = [
-            ("a".to_string(), 0.3),
-            ("b".to_string(), 0.9),
-            ("c".to_string(), 0.6),
-        ].into_iter().collect();
+    (
+        "a".to_string(),
+        ContigScore {
+            score: 0.3,
+            p_good: 0.3,
+            p_bases_covered: 0.3,
+            coverage: 2.0,
+        },
+    ),
+    (
+        "b".to_string(),
+        ContigScore {
+            score: 0.9,
+            p_good: 0.9,
+            p_bases_covered: 0.9,
+            coverage: 2.0,
+        },
+    ),
+    (
+        "c".to_string(),
+        ContigScore {
+            score: 0.6,
+            p_good: 0.6,
+            p_bases_covered: 0.6,
+            coverage: 2.0,
+        },
+    ),
+]
+.into_iter()
+.collect();
         let csv_path = write_scores_csv(&scores, &output).unwrap();
         let content = std::fs::read_to_string(&csv_path).unwrap();
         let lines: Vec<&str> = content.lines().collect();
@@ -293,16 +446,35 @@ t3\t200\t150.0\t0.0\t0.0
         assert!(lines[3].contains("a"), "last row should be lowest score 'a'");
     }
 
-    #[test]
-    fn test_load_scores_from_csv() {
-        let csv = "contig_name,score,length
-t1,0.85,500
-t2,0.40,300
+#[test]
+fn test_load_scores_from_csv() {
+    let csv = "contig_name\tscore\tp_good\tp_bases_covered\tcoverage
+t1\t0.85\t0.80\t0.90\t2.0
+t2\t0.40\t0.35\t0.50\t1.2
 ";
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(tmp.path(), csv).unwrap();
-        let scores = load_scores_from_csv(&[tmp.path().to_path_buf()]).unwrap();
-        assert_eq!(scores.len(), 2);
-        assert!((scores["t1"] - 0.85).abs() < 1e-6);
-    }
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+
+    std::fs::write(tmp.path(), csv).unwrap();
+
+    let scores =
+        load_scores_from_csv(
+            &[tmp.path().to_path_buf()]
+        )
+        .unwrap();
+
+    assert_eq!(scores.len(), 2);
+
+    assert!(
+        (scores["t1"].score - 0.85)
+            .abs()
+            < 1e-6
+    );
+
+    assert!(
+        (scores["t1"].coverage - 2.0)
+            .abs()
+            < 1e-6
+    );
+}
 }

@@ -1,0 +1,11 @@
+{
+    "salmon_version": "1.10.0",
+    "index": "Trinity.tmp.fasta.salmon.idx",
+    "libType": "U",
+    "unmatedReads": "/data/trinity_out/both.fa",
+    "output": "salmon_outdir",
+    "threads": "8",
+    "minAssignedFrags": "1",
+    "validateMappings": [],
+    "auxDir": "aux_info"
+}
