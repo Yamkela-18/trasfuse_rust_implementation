@@ -5,7 +5,7 @@
 // Pure-Rust implementation; no external parser crate required.
 // Handles:
 //   - load_fasta()             -> HashMap<id, FastaRecord>
-//   - concatenate_assemblies() -> merged FASTA with stem__id prefixing
+//   - concatenate_assemblies() -> merged FASTA with contigN_id prefixing
 //   - write_fasta_record()     -> 60-char line wrapping
 //   - write_fasta_file()       -> write an ordered set of records
 
@@ -98,9 +98,18 @@ pub fn parse_fasta_ordered<R: BufRead>(reader: R) -> Result<Vec<FastaRecord>> {
 }
 
 // ── concatenate_assemblies ────────────────────────────────────────────────────
+//
+// `assembly_files` is the (possibly filtered) list of assemblies to actually
+// write out. `all_assemblies` is the *original*, unfiltered list supplied on
+// the command line — it's used only to compute a stable per-assembly index,
+// so that contig prefixes ("contig0_", "contig1_", ...) always refer to the
+// same assembly regardless of whether some assemblies were dropped earlier
+// by score-based filtering. This keeps IDs consistent with the ones already
+// assigned during the initial scoring pass (see score::score_assemblies).
 
 pub fn concatenate_assemblies(
     assembly_files: &[PathBuf],
+    all_assemblies: &[PathBuf],
     output_path: &Path,
 ) -> Result<PathBuf> {
     let parent = output_path.parent().unwrap_or(Path::new("."));
@@ -116,13 +125,16 @@ pub fn concatenate_assemblies(
     );
 
     for asm_path in assembly_files {
-        let prefix = asm_path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "asm".into());
+        // Index into the ORIGINAL assembly list, not the filtered subset,
+        // so the prefix stays stable even if earlier assemblies were dropped.
+        let idx = all_assemblies
+            .iter()
+            .position(|p| p == asm_path)
+            .unwrap_or(0);
+        let contig_prefix = format!("contig{idx}");
 
         for rec in load_fasta_ordered(asm_path)? {
-            let new_id = format!("{}__{}", prefix, rec.id());
+            let new_id = format!("{contig_prefix}_{}", rec.id());
             let description = rec.header[rec.id().len()..].trim();
             let new_header = if description.is_empty() {
                 new_id.clone()
@@ -246,10 +258,35 @@ CCCC
 GGGG
 ").unwrap();
         let output = dir.path().join("out.fa");
-        let cat = concatenate_assemblies(&[asm1, asm2], &output).unwrap();
+        let all = vec![asm1.clone(), asm2.clone()];
+        let cat = concatenate_assemblies(&all, &all, &output).unwrap();
         let records = load_fasta_ordered(&cat).unwrap();
         assert_eq!(records.len(), 3);
-        assert!(records.iter().any(|r| r.id() == "k31__t1"));
-        assert!(records.iter().any(|r| r.id() == "k41__t1"));
+        assert!(records.iter().any(|r| r.id() == "contig0_t1"));
+        assert!(records.iter().any(|r| r.id() == "contig1_t1"));
+    }
+
+    #[test]
+    fn test_concatenate_stable_index_when_filtered() {
+        // If the first assembly is dropped by filtering, the second assembly
+        // must still be labeled contig1_, not contig0_, so its IDs continue
+        // to match the keys already computed during the earlier scoring pass.
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let asm1 = dir.path().join("k31.fa");
+        let asm2 = dir.path().join("k41.fa");
+        std::fs::write(&asm1, ">t1
+AAAA
+").unwrap();
+        std::fs::write(&asm2, ">t1
+GGGG
+").unwrap();
+        let output = dir.path().join("out.fa");
+        let all = vec![asm1.clone(), asm2.clone()];
+        let filtered = vec![asm2.clone()]; // asm1 dropped
+        let cat = concatenate_assemblies(&filtered, &all, &output).unwrap();
+        let records = load_fasta_ordered(&cat).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id(), "contig1_t1");
     }
 }

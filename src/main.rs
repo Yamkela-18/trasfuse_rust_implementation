@@ -161,10 +161,13 @@ Run with --install to download them.",
         let left  = require_file(cli.left.as_deref(),  "--left / -l")?;
         let right = require_file(cli.right.as_deref(), "--right / -r")?;
         info!("{}", "Scoring assemblies with Salmon + samtools...".cyan());
-        score::score_assemblies(&assembly_files, &left, &right, cli.threads, cli.verbose)?
+        // Multiple raw assemblies can share contig names (e.g. "TRINITY_DN5..."
+        // appearing in more than one assembler's output), so keys must be
+        // prefixed with the assembly file stem to stay unique.
+        score::score_assemblies(&assembly_files, &left, &right, cli.threads, cli.verbose, true)?
     };
     info!("Scored {} contigs across all assemblies.", scores.len());
-if cli.score_only {
+    if cli.score_only {
         let csv_path = score::write_scores_csv(&scores, &output)?;
         println!("\n{} Scores written to {:?}", "✓".green().bold(), csv_path);
         println!("  {} contigs scored", scores.len().to_string().yellow());
@@ -182,7 +185,7 @@ if cli.score_only {
 
     // 5. Concatenate
     info!("{}", "Concatenating filtered assemblies...".cyan());
-    let cat_path = fasta::concatenate_assemblies(&filtered, &output)?;
+    let cat_path = fasta::concatenate_assemblies(&filtered, &assembly_files, &output)?;
     info!("Combined FASTA written to {:?}", cat_path);
 
     // 6. Load sequences into memory
@@ -204,11 +207,17 @@ if cli.score_only {
     let final_output = if let Some(left) = cli.left.as_deref() {
         if let Some(right) = cli.right.as_deref() {
             info!("{}", "Running final scoring pass on consensus...".cyan());
+            // The consensus FASTA is a single file whose headers were already
+            // made globally unique during the earlier prefixed scoring pass
+            // (e.g. "trinity_output__TRINITY_DN5_..."), so scoring it again
+            // must NOT re-prefix with the file's own stem ("meg_cons"),
+            // or every key will fail to match rec.id() during filtering.
             let final_scores = score::score_assemblies(
                 &[cons_path.clone()],
                 &PathBuf::from(left),
                 &PathBuf::from(right),
                 cli.threads, cli.verbose,
+                false,
             )?;
             filter::write_filtered_fasta(&cons_path, &final_scores, cli.min_score, &output)?
         } else {
@@ -237,9 +246,9 @@ fn print_banner() {
 {} {}
 {}
 ",
-        "transfuse".cyan().bold(),
-        format!("v{VERSION}").dimmed(),
-        "Merge multiple de novo transcriptome assemblies".dimmed()
+             "transfuse".cyan().bold(),
+             format!("v{VERSION}").dimmed(),
+             "Merge multiple de novo transcriptome assemblies".dimmed()
     );
 }
 

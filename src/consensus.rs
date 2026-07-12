@@ -180,7 +180,8 @@ mod tests {
                     p_good: *s,
                     p_bases_covered: *s,
                     coverage: 2.0,
-                },
+                ..Default::default()
+},
             )
         })
         .collect()

@@ -20,16 +20,17 @@ pub fn filter_assemblies(
 
     let mut kept = Vec::new();
 
-    for path in assembly_files {
-        let prefix = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "asm".into());
+    // NOTE: this must be called with the FULL, original assembly list (in
+    // the same order used by score::score_assemblies' prefix_keys=true
+    // pass), so that index 0 here means the same assembly as "contig0_..."
+    // in the ScoreMap keys.
+    for (idx, path) in assembly_files.iter().enumerate() {
+        let contig_prefix = format!("contig{idx}_");
 
         let has_passing = scores.iter().any(|(id, score)| {
-            id.starts_with(&format!("{prefix}__"))
-                && score.score > min_score
-                && score.coverage >= 1.0
+            id.starts_with(&contig_prefix)
+                && score.score >= min_score
+                && score.p_bases_covered >= 0.5
         });
 
         if has_passing {
@@ -63,16 +64,16 @@ pub fn write_filtered_fasta(
             match scores.get(rec.id()) {
                 Some(score) => {
                     let keep =
-                        score.score > min_score
-                            && score.coverage >= 1.0;
+                        score.score >= min_score
+                            && score.p_bases_covered >= 0.5;
 
                     if !keep {
                         debug!(
                             "Dropping {} \
-(score={:.3}, coverage={:.3})",
+(score={:.3}, p_bases_covered={:.3})",
                             rec.id(),
                             score.score,
-                            score.coverage
+                            score.p_bases_covered
                         );
                     }
 
@@ -126,26 +127,32 @@ mod tests {
 
         let scores: ScoreMap = [
             (
-                "a__s1".into(),
+                "contig0_s1".into(),
                 ContigScore {
                     score: 0.1,
                     p_good: 0.1,
                     p_bases_covered: 0.1,
-                    coverage: 2.0,
-                },
+                    coverage: 0.5,
+                    depth_score: 0.1,
+                    uniformity_score: 0.1,
+                    pair_score: 0.1,
+                }
             ),
             (
-                "b__s1".into(),
+                "contig1_s1".into(),
                 ContigScore {
                     score: 0.9,
                     p_good: 0.9,
                     p_bases_covered: 0.9,
                     coverage: 2.0,
-                },
+                    depth_score: 0.9,
+                    uniformity_score: 0.9,
+                    pair_score: 0.9,
+                }
             ),
         ]
-        .into_iter()
-        .collect();
+            .into_iter()
+            .collect();
 
         let result =
             filter_assemblies(&[a, b], &scores, 0.0)
@@ -166,26 +173,32 @@ mod tests {
 
         let scores: ScoreMap = [
             (
-                "a__s1".into(),
+                "contig0_s1".into(),
                 ContigScore {
                     score: 0.1,
                     p_good: 0.1,
                     p_bases_covered: 0.1,
                     coverage: 0.5,
-                },
+                    depth_score: 0.1,
+                    uniformity_score: 0.1,
+                    pair_score: 0.1,
+                }
             ),
             (
-                "b__s1".into(),
+                "contig1_s1".into(),
                 ContigScore {
                     score: 0.9,
                     p_good: 0.9,
                     p_bases_covered: 0.9,
                     coverage: 2.0,
-                },
+                    depth_score: 0.9,
+                    uniformity_score: 0.9,
+                    pair_score: 0.9,
+                }
             ),
         ]
-        .into_iter()
-        .collect();
+            .into_iter()
+            .collect();
 
         let result =
             filter_assemblies(
@@ -193,7 +206,7 @@ mod tests {
                 &scores,
                 0.5,
             )
-            .unwrap();
+                .unwrap();
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], b);
@@ -210,7 +223,7 @@ mod tests {
             &input,
             ">good\nAAAA\n>bad\nCCCC\n",
         )
-        .unwrap();
+            .unwrap();
 
         let scores: ScoreMap = [
             (
@@ -220,7 +233,10 @@ mod tests {
                     p_good: 0.9,
                     p_bases_covered: 0.9,
                     coverage: 2.0,
-                },
+                    depth_score: 0.9,
+                    uniformity_score: 0.9,
+                    pair_score: 0.9,
+                }
             ),
             (
                 "bad".into(),
@@ -229,11 +245,14 @@ mod tests {
                     p_good: 0.1,
                     p_bases_covered: 0.1,
                     coverage: 0.5,
-                },
+                    depth_score: 0.1,
+                    uniformity_score: 0.1,
+                    pair_score: 0.1,
+                }
             ),
         ]
-        .into_iter()
-        .collect();
+            .into_iter()
+            .collect();
 
         write_filtered_fasta(
             &input,
@@ -241,7 +260,7 @@ mod tests {
             0.5,
             &output,
         )
-        .unwrap();
+            .unwrap();
 
         let records =
             fasta::load_fasta_ordered(&output)
